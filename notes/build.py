@@ -1,12 +1,15 @@
-import json
-import jinja2
-import os
 import glob
+import json
+import os
+import re
 import shutil
+from re import Match
+from sys import argv
+
+import jinja2
+import regex
 import shortuuid
 from ftfy import fix_encoding
-import re
-from pyhiccup.core import convert
 
 templateLoader = jinja2.FileSystemLoader(searchpath="./templates")
 env = jinja2.Environment(loader=templateLoader, extensions=['jinja2_highlight.HighlightExtension'])
@@ -35,7 +38,7 @@ def collectIDs(page):
 
     page_uuids[page['title']] = uuid
     page_names[uuid] = page['title']
-    
+
 def collectChildIDs(object):
     if 'children' in object.keys():
         for child in object['children']:
@@ -56,7 +59,7 @@ def processPage(page):
             children.append({
                 'html': renderMarkdown(fix_encoding(child['string'])) + renderBullets(child)
             })
-    
+
     template_data = {
         'title': renderMarkdown(title, ignoreLinks=True),
         'blocks': children,
@@ -78,7 +81,7 @@ def processPage(page):
             references[item['link_to']].append(item)
         else:
             references[item['link_to']] = [item]
-    
+
     _linksTo = []
 
     page_data[title] = template_data
@@ -110,7 +113,7 @@ def renderPage(page, directory='./', template='template.html', filename='index.h
 def renderBullets(block):
     if 'children' not in block.keys():
         return ''
-    
+
     output = '<ul>'
     for child in block['children']:
         output += '<li>'
@@ -118,19 +121,24 @@ def renderBullets(block):
 
         if 'children' in child.keys():
             output += renderBullets(child)
-        
+
         output += '</li>'
-    
+
     output += '</ul>'
 
     return output
 
+
 def _processInternalLink(match, block):
-    name = match.group(1)
+    name = match.group(1) or match.group(2)
+    if not name:
+        return ""
+
     if name in page_uuids:
         uuid = page_uuids[name]
         _linksTo.append({'link_to': uuid, 'text': block})
-        return '<a class="internal" data-uuid="' + uuid + '" href="/' + uuid + '">' + renderMarkdown(name) + '</a>'
+        return '<a class="internal" data-uuid="' + uuid + '" href="/' + uuid + '">' + renderMarkdown(name,
+                                                                                                     ignoreLinks=True) + '</a>'
     else:
         return '<a class="internal private" href="#">' + renderMarkdown(name) + '</a>'
 
@@ -149,9 +157,10 @@ def renderMarkdown(text, ignoreLinks=False):
 
         print(data[9:])
 
-        #print(data[10:])
-        #print(json.loads(data[10:]))
-        return convert(json.loads(data[9:]))
+        # print(data[10:])
+        # print(json.loads(data[10:]))
+        # return convert(json.loads(data[9:]))
+        return text
 
     if ignoreLinks == False:
         global wordcount
@@ -162,21 +171,30 @@ def renderMarkdown(text, ignoreLinks=False):
         text = re.sub(r'\[\[(.+?)\]\]', r'\1', text)
         text = re.sub(r'\[([^\[\]]+?)\]\((.+?)\)', r'\1', text)
     else:
-        text = re.sub(r'\[\[(.+?)\]\]', lambda x: _processInternalLink(x, text), text)
+        text = regex.sub('\\[\\[((?>[^\\[\\]]+|(?R))*)]]|#(\\w+)', lambda x: _processInternalLink(x, text), text)
         text = re.sub(r'\[([^\[\]]+?)\]\((.+?)\)', r'<a class="external" href="\2" target="_blank">\1</a>', text)
-    
+
     text = re.sub(r'\n', r'<br>', text)
-    text = re.sub(r'#(\[\[(.+?)\]\]|\w+)', r'<h2>\1</h2>', text)
+    # text = re.sub(r'#(\[\[(.+?)\]\]|\w+)', r'<h2>\1</h2>', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'\_\_(.*?)\_\_', r'<em>\1</em>', text)
     text = re.sub(r'\~\~(.+?)\~\~', r'<s>\1</s>', text)
     text = re.sub(r'\^\^(.+?)\^\^', r'<span class="highlight">\1</span>', text)
     text = re.sub(r'\`(.+?)\`', r'<code>\1</code>', text)
-    text = re.sub(r'\(\((.+?)\)\)', lambda x: renderMarkdown(block_ids[x.group(1)]['string'], ignoreLinks=True), text)
+    text = re.sub(r'\(\((.+?)\)\)', render_reference, text)
 
     return text
 
-with open('azlen.json', 'r') as f:
+
+def render_reference(match: Match):
+    uid = match.group(1)
+    if not uid or len(uid) != 9 or uid not in block_ids:
+        return match.string
+
+    return renderMarkdown(block_ids[uid]['string'], ignoreLinks=True)
+
+
+with open(argv[1], 'r') as f:
     data = json.loads(f.read())
 
 for page in data:
